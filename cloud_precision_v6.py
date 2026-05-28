@@ -34,7 +34,12 @@ except (ValueError, TypeError): pass
 SERVER_PROCESSING_OVERHEAD_MS = float(os.environ.get("SERVER_PROCESSING_OVERHEAD_MS", "15.0"))
 SERVER_PROCESSING_OVERHEAD = SERVER_PROCESSING_OVERHEAD_MS / 1000.0
 
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+# --- FIX: Manually create Event Loop for Python 3.14+ ---
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# Initialize Client with the specific loop
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH, loop=loop)
 TIMESTAMP_REGEX = re.compile(r'(?:time|timestamp|unix)?\s*[:=]?\s*(\d{10}(?:\.\d+)?|\d{13})', re.IGNORECASE)
 
 # --- Payload Parser ---
@@ -82,7 +87,7 @@ async def schedule_cloud_reply(client: TelegramClient, target_chat, msg_body: st
         logger.info(f"Scheduled Cloud Delivery for: {datetime.fromtimestamp(target_timestamp).strftime('%Y-%m-%d %H:%M:%S.%f')}")
         logger.info(f"Target Chat: {target_chat} | Offset: {SERVER_PROCESSING_OVERHEAD_MS} ms")
         
-        # Absolute exact calculation (No physical distance jitter to calculate)
+        # Absolute exact calculation (No physical distance jitter to calculate in Cloud)
         execution_time_sys = target_timestamp - SERVER_PROCESSING_OVERHEAD
         
         # Sleep until T-minus 100ms
@@ -120,7 +125,7 @@ async def message_handler(event):
     msg_body, target_ts, target_chat = parse_payload(event.raw_text)
     if not target_ts or not msg_body: return
     logger.info("Instruction received.")
-    asyncio.create_task(schedule_cloud_reply(client, target_chat, msg_body, target_ts))
+    loop.create_task(schedule_cloud_reply(client, target_chat, msg_body, target_ts))
 
 # --- Dummy Web Server for Render Health Checks ---
 async def health_check(request):
@@ -152,6 +157,5 @@ async def main():
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    try: import uvloop; uvloop.install()
-    except ImportError: pass
-    asyncio.run(main())
+    # Start the execution using the manually created loop
+    loop.run_until_complete(main())
