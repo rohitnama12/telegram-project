@@ -363,34 +363,37 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
         gc.enable()
         logger.error(f"Execution Failed: {e}")
 
-@client.on(events.NewMessage)
+@client.on(events.NewMessage(outgoing=True))
 async def message_handler(event):
-    # Security: Sirf authorized SOURCE_CHAT_ID (teri saved messages) ko sunega
-    if SOURCE_CHAT_ID_RESOLVED and event.chat_id != SOURCE_CHAT_ID_RESOLVED: return
+    # Debugging Step: Dekhte hain bot ne actual mein kya read kiya
+    logger.info(f"Checking Outgoing Message: \n{event.raw_text}")
     
     msg_body, target_ts, target_chat = parse_payload(event.raw_text)
-    if not target_ts or not msg_body: return
+    
+    # Agar format match nahi hua toh reason log karega
+    if not target_ts or not msg_body: 
+        return
     
     target_dt_ist = datetime.fromtimestamp(target_ts, timezone.utc) + IST_OFFSET
     time_str = target_dt_ist.strftime('%Y-%m-%d %I:%M:%S %p')
     
     logger.info(f"New C2 Command Received! Target: {target_chat} | Time: {time_str}")
     
-    # 1. Background task create kar diya (Bina script ko roke)
+    # Background task schedule
     loop.create_task(schedule_cloud_delivery(target_ts, target_chat, msg_body))
     
-    # 2. Tujhe Telegram par hi confirmation reply bhej diya
+    # Confirmation reply
     try:
         reply_msg = (
             f"✅ **Payload Locked!**\n\n"
             f"🎯 **Target:** `{target_chat}`\n"
             f"⏰ **Trigger Time:** `{time_str}` (IST)\n"
-            f"⚙️ **Status:** Sniper is in position. Waiting for exact millisecond."
+            f"⚙️ **Status:** Sniper is in position."
         )
         await event.reply(reply_msg)
     except Exception as e:
         logger.error(f"Failed to send confirmation reply: {e}")
-
+        
 async def dummy_web_handler(request):
     return web.Response(text="Cloud Precision Bot V7 (C2 Secured) is Online and Running.")
 
