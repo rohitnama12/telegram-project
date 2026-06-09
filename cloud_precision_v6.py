@@ -242,7 +242,7 @@ except (ValueError, TypeError): pass
 
 # --- V7 GOD-MODE OFFSET ---
 # Ab delay bohot kam ho gaya hai raw request ki wajah se. 12ms safe zone hai.
-SERVER_PROCESSING_OVERHEAD_MS = 12.0
+SERVER_PROCESSING_OVERHEAD_MS = 3
 
 # Base timezone difference (IST is UTC+5:30)
 IST_OFFSET = timedelta(hours=5, minutes=30)
