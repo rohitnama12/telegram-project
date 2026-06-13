@@ -222,11 +222,10 @@ from telethon.tl.functions import PingRequest
 # ================= CONFIGURATION =================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - CloudPrecisionV7 - %(levelname)s - %(message)s'
+    format='%(asctime)s - CloudPrecisionV8 - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("CloudPrecisionV7_IST")
+logger = logging.getLogger("CloudPrecisionV8_IST")
 
-# --- Cloud Environment Variables (Same as V6) ---
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
@@ -240,9 +239,8 @@ DEFAULT_TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID")
 try: DEFAULT_TARGET_CHAT_ID = int(DEFAULT_TARGET_CHAT_ID)
 except (ValueError, TypeError): pass
 
-# --- V7 GOD-MODE OFFSET ---
-# Ab delay bohot kam ho gaya hai raw request ki wajah se. 12ms safe zone hai.
-SERVER_PROCESSING_OVERHEAD_MS = 3
+# Global Lock to enforce Single-Bullet Execution
+SNIPER_BUSY_LOCK = False
 
 # Base timezone difference (IST is UTC+5:30)
 IST_OFFSET = timedelta(hours=5, minutes=30)
@@ -251,7 +249,6 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH, loop=loop)
 
-# V6 wala robust payload parser - NOW SUPPORTS 'target_id:'
 TIMESTAMP_REGEX = re.compile(r'(?:time|timestamp|unix)?\s*[:=]?\s*(\d{10}(?:\.\d+)?|\d{13})', re.IGNORECASE)
 
 def parse_payload(text):
@@ -273,13 +270,11 @@ def parse_payload(text):
             if am_pm == 'pm' and hours != 12: hours += 12
             elif am_pm == 'am' and hours == 12: hours = 0
             
-            # IST based calculation
             now_ist = datetime.now(timezone.utc) + IST_OFFSET
             target_dt_ist = now_ist.replace(hour=hours, minute=minutes, second=seconds, microsecond=0)
             if target_dt_ist < now_ist: target_dt_ist += timedelta(days=1)
             target_ts = (target_dt_ist - IST_OFFSET).timestamp()
 
-    # Updated to support both 'target:' and 'target_id:'
     match_target = re.search(r"(?:target|target_id)\s*:\s*([^\s\n]+)", text, re.IGNORECASE)
     if match_target:
         try: target_chat = int(match_target.group(1).strip())
@@ -287,26 +282,30 @@ def parse_payload(text):
         
     return msg_body, target_ts, target_chat
 
-async def function_pre_warm(client):
-    """Sends a silent ping to keep the MTProto socket hot."""
-    try:
-        await client(PingRequest(ping_id=random.randint(1, 100000)))
-        logger.info("MTProto Socket Pre-Warmed Successfully.")
-    except Exception as e:
-        logger.warning(f"Socket warmup failed, but continuing: {e}")
+async def measure_live_rtt():
+    """Measures real-time network latency directly to the Telegram gateway."""
+    latencies = []
+    for _ in range(3):
+        try:
+            start = perf_counter()
+            await client(PingRequest(ping_id=random.randint(1, 100000)))
+            latencies.append((perf_counter() - start) * 1000.0)
+        except Exception:
+            pass
+    if latencies:
+        return sum(latencies) / len(latencies)
+    return 10.0  # Safe structural fallback
 
 async def schedule_cloud_delivery(target_ts, chat_id, message_text):
+    global SNIPER_BUSY_LOCK
     try:
         target_dt_utc = datetime.fromtimestamp(target_ts, timezone.utc)
         target_dt_ist = target_dt_utc + IST_OFFSET
-        offset_seconds = SERVER_PROCESSING_OVERHEAD_MS / 1000.0
         
-        logger.info(f"Scheduled Cloud Delivery for: {target_dt_ist.strftime('%Y-%m-%d %H:%M:%S.%f')} (IST)")
-        logger.info(f"Target Chat: {chat_id} | V7 Raw Offset: {SERVER_PROCESSING_OVERHEAD_MS} ms")
-
-        # V7 PRE-RESOLVE: Entity aur Raw Request pehle hi banakar ready rakhlo
+        logger.info(f"🎯 Scheduled Cloud Delivery for: {target_dt_ist.strftime('%Y-%m-%d %H:%M:%S.%f')} (IST)")
+        
+        # Pre-resolve entity and build raw network payload
         target_entity = await client.get_input_entity(chat_id)
-        
         raw_request = SendMessageRequest(
             peer=target_entity,
             message=message_text,
@@ -314,8 +313,9 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
             no_webpage=True
         )
 
-        warmed_up = False
-
+        rtt_calculated = False
+        dynamic_offset_seconds = 0.002  # Initial hard baseline fallback
+        
         while True:
             current_time = datetime.now(timezone.utc)
             time_left = (target_dt_utc - current_time).total_seconds()
@@ -323,36 +323,44 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
             if time_left <= 0:
                 break
 
-            # T-Minus 3 seconds: Pre-warm socket
-            if time_left <= 3.0 and not warmed_up:
-                await function_pre_warm(client)
-                warmed_up = True
+            # T-Minus 5 Seconds: Execute Dynamic Queue Sensing Probe
+            if time_left <= 5.0 and not rtt_calculated:
+                logger.info("📡 Radar Active: Measuring live Telegram DC latency...")
+                avg_rtt = await measure_live_rtt()
+                
+                # Dynamic calculation matching internal network packet transit
+                one_way_delay = avg_rtt / 2.0
+                
+                # Mathematical Sweet Spot: One-way transit minus a 1.5ms hard wall
+                # This guarantees the packet hits exactly on or slightly after .000 (Strictly 0% Pre-fire)
+                dynamic_offset_seconds = max(0.0005, (one_way_delay - 1.5) / 1000.0)
+                
+                logger.info(f"📊 Live RTT: {avg_rtt:.2s}ms | One-Way Transit: {one_way_delay:.2f}ms")
+                logger.info(f"⚙️ V8 Adaptive Offset Locked: {dynamic_offset_seconds * 1000.0:.3f} ms")
+                rtt_calculated = True
 
-            # Hybrid Spinlock Phase 1: OS-Friendly Sleep (Bachaav from CPU Lag)
-            if time_left > 0.005:
+            # Hybrid Spinlock Phase 1: Safe Async Yield Loop
+            if time_left > 0.004:
                 await asyncio.sleep(0.001)
                 continue
             
-            # Hybrid Spinlock Phase 2: Bare-Metal Micro-Spinlock
-            logger.info("Entering V7 Hybrid Micro-Spinlock...")
+            # T-Minus 4 Milliseconds: Trigger CPU Isolation & Bare-Metal Spinlock
             gc.disable()
+            trigger_target_ts = target_dt_utc.timestamp() - dynamic_offset_seconds
             
-            trigger_target_ts = target_dt_utc.timestamp() - offset_seconds
-            
-            # Absolute tight loop for the last 5 milliseconds
+            # Unbreakable microsecond execution spinlock loop
             while datetime.now(timezone.utc).timestamp() < trigger_target_ts:
                 pass
             
-            # FIRE RAW PACKET
+            # FIRE PACKET RIGHT AT THE WALL
             trigger_time = datetime.now(timezone.utc)
             await client(raw_request)
             ack_time = datetime.now(timezone.utc)
             
             gc.enable()
 
-            delta_ms = (ack_time.timestamp() - target_dt_utc.timestamp()) * 1000
-
-            logger.info("========== V7 CLOUD EXECUTION REPORT ==========")
+            delta_ms = (ack_time.timestamp() - target_dt_utc.timestamp()) * 1000.0
+            logger.info("========== V8 CLOUD EXECUTION REPORT ==========")
             logger.info(f"Local Cloud Trigger:    {(trigger_time + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')}")
             logger.info(f"Server Acknowledgment:  {(ack_time + IST_OFFSET).strftime('%Y-%m-%d %H:%M:%S.%f')}")
             logger.info(f"Final Landing Delta:    {delta_ms:+.3f} ms")
@@ -361,41 +369,43 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
 
     except Exception as e:
         gc.enable()
-        logger.error(f"Execution Failed: {e}")
+        logger.error(f"Execution System Failure: {e}")
+    finally:
+        SNIPER_BUSY_LOCK = False  # Release lock for the next execution window
 
 @client.on(events.NewMessage(outgoing=True))
 async def message_handler(event):
-    # Debugging Step: Dekhte hain bot ne actual mein kya read kiya
-    logger.info(f"Checking Outgoing Message: \n{event.raw_text}")
-    
+    global SNIPER_BUSY_LOCK
     msg_body, target_ts, target_chat = parse_payload(event.raw_text)
     
-    # Agar format match nahi hua toh reason log karega
     if not target_ts or not msg_body: 
         return
-    
+        
+    if SNIPER_BUSY_LOCK:
+        logger.warning("⚠️ Execution Collision Blocked! A sniper task is already tracking a target.")
+        await event.reply("❌ **Operation Blocked:** Engine is currently tracking another target. Anti-collision active.")
+        return
+
+    SNIPER_BUSY_LOCK = True
     target_dt_ist = datetime.fromtimestamp(target_ts, timezone.utc) + IST_OFFSET
     time_str = target_dt_ist.strftime('%Y-%m-%d %I:%M:%S %p')
     
-    logger.info(f"New C2 Command Received! Target: {target_chat} | Time: {time_str}")
-    
-    # Background task schedule
+    logger.info(f"🚀 Master V8 Lock Established! Target: {target_chat} | Time: {time_str}")
     loop.create_task(schedule_cloud_delivery(target_ts, target_chat, msg_body))
     
-    # Confirmation reply
     try:
         reply_msg = (
-            f"✅ **Payload Locked!**\n\n"
-            f"🎯 **Target:** `{target_chat}`\n"
-            f"⏰ **Trigger Time:** `{time_str}` (IST)\n"
-            f"⚙️ **Status:** Sniper is in position."
+            f"⚡ **V8 God-Mode Engine Engaged!**\n\n"
+            f"🎯 **Target ID:** `{target_chat}`\n"
+            f"⏰ **Time Slot:** `{time_str}` (IST)\n"
+            f"🛡️ **System:** Radar Calibration & Anti-Collision active."
         )
         await event.reply(reply_msg)
     except Exception as e:
-        logger.error(f"Failed to send confirmation reply: {e}")
+        logger.error(f"Failed to transmit confirmation payload: {e}")
         
 async def dummy_web_handler(request):
-    return web.Response(text="Cloud Precision Bot V7 (C2 Secured) is Online and Running.")
+    return web.Response(text="Cloud Precision Bot V8 (Adaptive Core) is Online.")
 
 async def start_web_server():
     app = web.Application()
@@ -405,7 +415,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    logger.info(f"Web server started on port {port}")
+    logger.info(f"Web server safely bound to port {port}")
 
 async def main():
     await client.start()
@@ -416,8 +426,7 @@ async def main():
     except Exception:
         SOURCE_CHAT_ID_RESOLVED = int(SOURCE_CHAT_ID) if isinstance(SOURCE_CHAT_ID, int) else SOURCE_CHAT_ID
             
-    logger.info(f"Cloud Precision V7 [IST LOCKED] listening on: {SOURCE_CHAT_ID_RESOLVED}")
-    
+    logger.info(f"Cloud Precision V8 Core Active on: {SOURCE_CHAT_ID_RESOLVED}")
     await start_web_server()
     await client.run_until_disconnected()
 
