@@ -222,7 +222,7 @@ from telethon.tl.functions import PingRequest
 # ================= CONFIGURATION =================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - CloudPrecisionV8 - %(levelname)s - %(message)s'
+    format='%(asctime)s - CloudPrecisionV8.1 - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("CloudPrecisionV8_IST")
 
@@ -239,8 +239,8 @@ DEFAULT_TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID")
 try: DEFAULT_TARGET_CHAT_ID = int(DEFAULT_TARGET_CHAT_ID)
 except (ValueError, TypeError): pass
 
-# Global Lock to enforce Single-Bullet Execution
-SNIPER_BUSY_LOCK = False
+# V8.1 ABORT FEATURE: Lock ki jagah hum Task ko memory mein hold karenge
+CURRENT_SNIPER_TASK = None
 
 # Base timezone difference (IST is UTC+5:30)
 IST_OFFSET = timedelta(hours=5, minutes=30)
@@ -283,7 +283,6 @@ def parse_payload(text):
     return msg_body, target_ts, target_chat
 
 async def measure_live_rtt():
-    """Measures real-time network latency directly to the Telegram gateway."""
     latencies = []
     for _ in range(3):
         try:
@@ -294,17 +293,16 @@ async def measure_live_rtt():
             pass
     if latencies:
         return sum(latencies) / len(latencies)
-    return 10.0  # Safe structural fallback
+    return 10.0  
 
 async def schedule_cloud_delivery(target_ts, chat_id, message_text):
-    global SNIPER_BUSY_LOCK
+    global CURRENT_SNIPER_TASK
     try:
         target_dt_utc = datetime.fromtimestamp(target_ts, timezone.utc)
         target_dt_ist = target_dt_utc + IST_OFFSET
         
         logger.info(f"🎯 Scheduled Cloud Delivery for: {target_dt_ist.strftime('%Y-%m-%d %H:%M:%S.%f')} (IST)")
         
-        # Pre-resolve entity and build raw network payload
         target_entity = await client.get_input_entity(chat_id)
         raw_request = SendMessageRequest(
             peer=target_entity,
@@ -314,7 +312,7 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
         )
 
         rtt_calculated = False
-        dynamic_offset_seconds = 0.002  # Initial hard baseline fallback
+        dynamic_offset_seconds = 0.002  
         
         while True:
             current_time = datetime.now(timezone.utc)
@@ -323,36 +321,26 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
             if time_left <= 0:
                 break
 
-            # T-Minus 5 Seconds: Execute Dynamic Queue Sensing Probe
             if time_left <= 5.0 and not rtt_calculated:
                 logger.info("📡 Radar Active: Measuring live Telegram DC latency...")
                 avg_rtt = await measure_live_rtt()
-                
-                # Dynamic calculation matching internal network packet transit
                 one_way_delay = avg_rtt / 2.0
-                
-                # Mathematical Sweet Spot: One-way transit minus a 1.5ms hard wall
-                # This guarantees the packet hits exactly on or slightly after .000 (Strictly 0% Pre-fire)
                 dynamic_offset_seconds = max(0.0005, (one_way_delay - 1.5) / 1000.0)
                 
-                logger.info(f"📊 Live RTT: {avg_rtt:.2s}ms | One-Way Transit: {one_way_delay:.2f}ms")
+                logger.info(f"📊 Live RTT: {avg_rtt:.2f}ms | One-Way Transit: {one_way_delay:.2f}ms")
                 logger.info(f"⚙️ V8 Adaptive Offset Locked: {dynamic_offset_seconds * 1000.0:.3f} ms")
                 rtt_calculated = True
 
-            # Hybrid Spinlock Phase 1: Safe Async Yield Loop
             if time_left > 0.004:
                 await asyncio.sleep(0.001)
                 continue
             
-            # T-Minus 4 Milliseconds: Trigger CPU Isolation & Bare-Metal Spinlock
             gc.disable()
             trigger_target_ts = target_dt_utc.timestamp() - dynamic_offset_seconds
             
-            # Unbreakable microsecond execution spinlock loop
             while datetime.now(timezone.utc).timestamp() < trigger_target_ts:
                 pass
             
-            # FIRE PACKET RIGHT AT THE WALL
             trigger_time = datetime.now(timezone.utc)
             await client(raw_request)
             ack_time = datetime.now(timezone.utc)
@@ -367,45 +355,60 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
             logger.info("============================================")
             break
 
+    except asyncio.CancelledError:
+        gc.enable()
+        logger.info("🛑 Sniper mission was officially aborted by the user.")
     except Exception as e:
         gc.enable()
         logger.error(f"Execution System Failure: {e}")
     finally:
-        SNIPER_BUSY_LOCK = False  # Release lock for the next execution window
+        CURRENT_SNIPER_TASK = None
 
 @client.on(events.NewMessage(outgoing=True))
 async def message_handler(event):
-    global SNIPER_BUSY_LOCK
+    global CURRENT_SNIPER_TASK
+    text = event.raw_text.strip().lower()
+    
+    # V8.1: The Kill Switch (Cancel Command)
+    if text == "cancel":
+        if CURRENT_SNIPER_TASK and not CURRENT_SNIPER_TASK.done():
+            CURRENT_SNIPER_TASK.cancel()
+            CURRENT_SNIPER_TASK = None
+            await event.reply("🛑 **Mission Aborted!** The sniper has been stood down.\nReady for new coordinates.")
+        else:
+            await event.reply("⚠️ No active sniper mission to cancel.")
+        return
+
     msg_body, target_ts, target_chat = parse_payload(event.raw_text)
     
     if not target_ts or not msg_body: 
         return
         
-    if SNIPER_BUSY_LOCK:
+    if CURRENT_SNIPER_TASK and not CURRENT_SNIPER_TASK.done():
         logger.warning("⚠️ Execution Collision Blocked! A sniper task is already tracking a target.")
-        await event.reply("❌ **Operation Blocked:** Engine is currently tracking another target. Anti-collision active.")
+        await event.reply("❌ **Operation Blocked:** Engine is currently tracking another target.\n\n⚠️ Type `cancel` to abort the current mission before setting a new one.")
         return
 
-    SNIPER_BUSY_LOCK = True
     target_dt_ist = datetime.fromtimestamp(target_ts, timezone.utc) + IST_OFFSET
     time_str = target_dt_ist.strftime('%Y-%m-%d %I:%M:%S %p')
     
     logger.info(f"🚀 Master V8 Lock Established! Target: {target_chat} | Time: {time_str}")
-    loop.create_task(schedule_cloud_delivery(target_ts, target_chat, msg_body))
+    CURRENT_SNIPER_TASK = loop.create_task(schedule_cloud_delivery(target_ts, target_chat, msg_body))
     
     try:
         reply_msg = (
             f"⚡ **V8 God-Mode Engine Engaged!**\n\n"
             f"🎯 **Target ID:** `{target_chat}`\n"
             f"⏰ **Time Slot:** `{time_str}` (IST)\n"
-            f"🛡️ **System:** Radar Calibration & Anti-Collision active."
+            f"🛡️ **System:** Radar Calibration active.\n"
+            f"*(Type `cancel` to abort)*"
         )
         await event.reply(reply_msg)
     except Exception as e:
         logger.error(f"Failed to transmit confirmation payload: {e}")
         
 async def dummy_web_handler(request):
-    return web.Response(text="Cloud Precision Bot V8 (Adaptive Core) is Online.")
+    return web.Response(text="Cloud Precision Bot V8.1 (Adaptive Core) is Online.")
 
 async def start_web_server():
     app = web.Application()
