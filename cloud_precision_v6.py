@@ -223,9 +223,9 @@ from telethon.tl.functions import PingRequest
 # ================= CONFIGURATION =================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - CloudPrecisionV8.6 - %(levelname)s - %(message)s'
+    format='%(asctime)s - CloudPrecisionV8.7 - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("CloudPrecisionV8.6_IST")
+logger = logging.getLogger("CloudPrecisionV8.7_IST")
 
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
@@ -287,9 +287,8 @@ async def tune_network_socket():
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, 0x10) 
-            logger.info("🔌 Hardware Tuned: Zero-Buffer Routing Engaged!")
-    except Exception as e:
-        logger.warning(f"Socket tuning bypassed: {e}")
+    except Exception:
+        pass
 
 async def get_loop_lag():
     start = perf_counter()
@@ -299,123 +298,85 @@ async def get_loop_lag():
 async def measure_live_rtt():
     latencies = []
     await tune_network_socket()
-    
     for _ in range(4):
         try:
             start = perf_counter()
             await client._sender.send(PingRequest(ping_id=random.randint(1, 100000)))
             latencies.append((perf_counter() - start) * 1000.0)
-        except Exception:
-            pass
-    
+        except Exception: pass
     if latencies:
-        avg_rtt = sum(latencies) / len(latencies)
-        min_rtt = min(latencies)
-        max_rtt = max(latencies)
-        jitter = max_rtt - min_rtt
-        return avg_rtt, min_rtt, max_rtt, jitter
+        return sum(latencies) / len(latencies), min(latencies), max(latencies), max(latencies) - min(latencies)
     return 10.0, 10.0, 10.0, 0.0
 
 async def schedule_cloud_delivery(target_ts, chat_id, message_text):
     global CURRENT_SNIPER_TASK
     try:
-        t_setup_start = perf_counter()
         target_dt_utc = datetime.fromtimestamp(target_ts, timezone.utc)
         target_dt_ist = target_dt_utc + IST_OFFSET
-        
-        logger.info(f"🎯 Scheduled Cloud Delivery for: {target_dt_ist.strftime('%Y-%m-%d %H:%M:%S.%f')} (IST)")
+        logger.info(f"🎯 Target Locked: {target_dt_ist.strftime('%Y-%m-%d %H:%M:%S.%f')} (IST)")
         
         target_entity = await client.get_input_entity(chat_id)
         raw_request = SendMessageRequest(
-            peer=target_entity,
-            message=message_text,
-            random_id=random.randint(-9223372036854775808, 9223372036854775807),
-            no_webpage=True
+            peer=target_entity, message=message_text,
+            random_id=random.randint(-9223372036854775808, 9223372036854775807), no_webpage=True
         )
-        
-        setup_ms = (perf_counter() - t_setup_start) * 1000.0
 
         rtt_calculated = False
-        dynamic_offset_seconds = 0.040  
-        radar_stats = (0, 0, 0, 0)
-        os_choke_penalty = 0.0
-        BASE_DISPATCH_MS = 38.0 # Telemetry Extracted Golden Number
+        dynamic_offset_seconds = 0.005  
         
         while True:
             current_time = datetime.now(timezone.utc)
             time_left = (target_dt_utc - current_time).total_seconds()
 
-            if time_left <= 0:
-                break
+            if time_left <= 0: break
 
             if time_left <= 5.0 and not rtt_calculated:
-                logger.info("📡 V8.6 Precision Radar Active...")
                 avg_rtt, min_rtt, max_rtt, jitter = await measure_live_rtt()
-                radar_stats = (avg_rtt, min_rtt, max_rtt, jitter)
-                
                 one_way_delay = avg_rtt / 2.0
                 
-                # ========================================================
-                # V8.6 THE REFINED TELEMETRY MATH (Negative Delta Shield)
-                # ========================================================
+                # V8.7 REALITY MATH (No Magic Numbers)
                 sys_load = os.getloadavg() if hasattr(os, 'getloadavg') else (1.0, 1.0, 1.0)
                 current_1m_load = sys_load[0]
                 
-                # Gentle load penalty (Only +2ms per point above 4.0 load)
-                # Prevents massive over-corrections that cause early fires.
-                os_choke_penalty = max(0.0, (current_1m_load - 4.0) * 2.0)
+                # Very gentle OS penalty to avoid early hitting
+                os_choke_penalty = max(0.0, (current_1m_load - 3.5) * 1.5)
                 
                 if str(chat_id).startswith('-100'):
-                    # Supergroup: Ping + Base Overhead + Gentle OS Penalty + 5ms Group Padding
-                    dynamic_offset_seconds = (one_way_delay + BASE_DISPATCH_MS + os_choke_penalty + 5.0) / 1000.0  
+                    dynamic_offset_seconds = (one_way_delay + os_choke_penalty + 1.0) / 1000.0  
                 else:
-                    # Private Chat: Ping + Base Overhead + Gentle OS Penalty
-                    dynamic_offset_seconds = (one_way_delay + BASE_DISPATCH_MS + os_choke_penalty) / 1000.0 
+                    dynamic_offset_seconds = (one_way_delay + os_choke_penalty) / 1000.0 
                 
-                logger.info(f"📊 RTT: {avg_rtt:.2f}ms | Render CPU Load: {current_1m_load:.2f}")
-                logger.info(f"🧮 Base Dispatch: {BASE_DISPATCH_MS}ms | Gentle OS Penalty: +{os_choke_penalty:.1f}ms")
-                logger.info(f"⚙️ V8.6 Precision Pre-Fire Locked: {dynamic_offset_seconds * 1000.0:.3f} ms")
+                logger.info(f"📊 Live RTT: {avg_rtt:.2f}ms | Render CPU Load: {current_1m_load:.2f}")
+                logger.info(f"⚙️ V8.7 True-Offset Locked: {dynamic_offset_seconds * 1000.0:.3f} ms")
                 rtt_calculated = True
 
-            # Dynamic Yielding: Wake up exactly 2ms before the calculated trigger
             if time_left > (dynamic_offset_seconds + 0.002):
                 await asyncio.sleep(0.001)
                 continue
             
-            loop_lag_ms = await get_loop_lag()
-            
             gc.disable()
             trigger_target_ts = target_dt_utc.timestamp() - dynamic_offset_seconds
             
-            # Spinlock Zero-Yield
-            t_spin_start = perf_counter()
-            while datetime.now(timezone.utc).timestamp() < trigger_target_ts:
-                pass
-            spin_time_ms = (perf_counter() - t_spin_start) * 1000.0
+            while datetime.now(timezone.utc).timestamp() < trigger_target_ts: pass
             
-            # BARE-METAL DISPATCH
             trigger_time = datetime.now(timezone.utc)
             t_dispatch_start = perf_counter()
-            
             await client._sender.send(raw_request)
-            
             dispatch_to_ack_ms = (perf_counter() - t_dispatch_start) * 1000.0
             ack_time = datetime.now(timezone.utc)
             gc.enable()
 
-            delta_ms = (ack_time.timestamp() - target_dt_utc.timestamp()) * 1000.0
-            sys_load_final = os.getloadavg() if hasattr(os, 'getloadavg') else ("N/A", "N/A", "N/A")
+            # V8.7 THE TRUE STAMP CALCULATION
+            true_hit_time = ack_time - timedelta(milliseconds=(dispatch_to_ack_ms / 2.0))
+            true_delta_ms = (true_hit_time.timestamp() - target_dt_utc.timestamp()) * 1000.0
             
-            logger.info("========== V8.6 TELEMETRY EXECUTION REPORT ==========")
+            logger.info("========== V8.7 TRUE-STAMP EXECUTION REPORT ==========")
             logger.info(f"[TIMING] Local Trigger:   {(trigger_time + IST_OFFSET).strftime('%H:%M:%S.%f')}")
-            logger.info(f"[TIMING] Server Ack:      {(ack_time + IST_OFFSET).strftime('%H:%M:%S.%f')}")
-            logger.info(f"[TIMING] Landing Delta:   {delta_ms:+.3f} ms")
-            logger.info("-------------------------------------------------------")
-            logger.info(f"[MATH] Gentle OS Penalty: +{os_choke_penalty:.1f}ms | Loop Lag: {loop_lag_ms:.3f}ms")
-            logger.info(f"[MATH] Final CPU Load: {sys_load_final}")
-            logger.info(f"[DIAG] Spinlock Held: {spin_time_ms:.1f}ms | Raw Dispatch: {dispatch_to_ack_ms:.1f}ms")
-            logger.info(f"[DIAG] Net Jitter: {radar_stats[3]:.2f}ms | Base RTT: {radar_stats[0]:.2f}ms")
-            logger.info("=====================================================")
+            logger.info(f"[TIMING] TRUE TG HIT:     {(true_hit_time + IST_OFFSET).strftime('%H:%M:%S.%f')} 🎯")
+            logger.info(f"[TIMING] True Delta:      {true_delta_ms:+.3f} ms")
+            logger.info("------------------------------------------------------")
+            logger.info(f"[DIAG] Raw Dispatch: {dispatch_to_ack_ms:.1f}ms | Base RTT: {avg_rtt:.2f}ms")
+            logger.info("======================================================")
             break
 
     except asyncio.CancelledError:
@@ -431,20 +392,16 @@ async def schedule_cloud_delivery(target_ts, chat_id, message_text):
 async def message_handler(event):
     global CURRENT_SNIPER_TASK
     text = event.raw_text.strip().lower()
-    
     if text == "cancel":
         if CURRENT_SNIPER_TASK and not CURRENT_SNIPER_TASK.done():
             CURRENT_SNIPER_TASK.cancel()
             CURRENT_SNIPER_TASK = None
             await event.reply("🛑 **Mission Aborted!**")
-        else:
-            await event.reply("⚠️ No active mission.")
+        else: await event.reply("⚠️ No active mission.")
         return
 
     msg_body, target_ts, target_chat = parse_payload(event.raw_text)
-    
-    if not target_ts or not msg_body: 
-        return
+    if not target_ts or not msg_body: return
         
     if CURRENT_SNIPER_TASK and not CURRENT_SNIPER_TASK.done():
         await event.reply("❌ **Operation Blocked:** Engine tracking another target. Type `cancel` first.")
@@ -453,23 +410,20 @@ async def message_handler(event):
     target_dt_ist = datetime.fromtimestamp(target_ts, timezone.utc) + IST_OFFSET
     time_str = target_dt_ist.strftime('%Y-%m-%d %I:%M:%S %p')
     
-    logger.info(f"🚀 V8.6 Lock: {target_chat} | {time_str}")
+    logger.info(f"🚀 V8.7 Lock: {target_chat} | {time_str}")
     CURRENT_SNIPER_TASK = loop.create_task(schedule_cloud_delivery(target_ts, target_chat, msg_body))
     
     try:
         reply_msg = (
-            f"⚡ **V8.6 Precision Shield Engaged!**\n\n"
+            f"⚡ **V8.7 True-Stamp Engine Engaged!**\n\n"
             f"🎯 **Target ID:** `{target_chat}`\n"
             f"⏰ **Time Slot:** `{time_str}` (IST)\n"
-            f"🧮 **System:** Anti-Negative Delta & Telemetry lock active.\n"
-            f"*(Type `cancel` to abort)*"
+            f"🧮 **System:** Anti-Negative Delta Active.\n*(Type `cancel` to abort)*"
         )
         await event.reply(reply_msg)
-    except Exception as e:
-        pass
+    except Exception: pass
         
-async def dummy_web_handler(request):
-    return web.Response(text="Cloud Precision Bot V8.6 (Telemetry Calibrated) is Online.")
+async def dummy_web_handler(request): return web.Response(text="Cloud Precision Bot V8.7 is Online.")
 
 async def start_web_server():
     app = web.Application()
@@ -479,18 +433,9 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    logger.info(f"Web server safely bound to port {port}")
 
 async def main():
     await client.start()
-    global SOURCE_CHAT_ID_RESOLVED
-    try:
-        entity = await client.get_input_entity(SOURCE_CHAT_ID)
-        SOURCE_CHAT_ID_RESOLVED = utils.get_peer_id(entity)
-    except Exception:
-        SOURCE_CHAT_ID_RESOLVED = int(SOURCE_CHAT_ID) if isinstance(SOURCE_CHAT_ID, int) else SOURCE_CHAT_ID
-            
-    logger.info(f"Cloud Precision V8.6 Core Active on: {SOURCE_CHAT_ID_RESOLVED}")
     await start_web_server()
     await client.run_until_disconnected()
 
