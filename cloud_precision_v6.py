@@ -473,9 +473,9 @@ from telethon.tl.functions import PingRequest
 # ================= CONFIGURATION =================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - CloudPrecisionV8.8 - %(levelname)s - %(message)s'
+    format='%(asctime)s - CloudPrecisionV8.8.1 - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("CloudPrecisionV8.8_IST")
+logger = logging.getLogger("CloudPrecisionV8.8.1_IST")
 
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
@@ -490,8 +490,8 @@ DEFAULT_TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID")
 try: DEFAULT_TARGET_CHAT_ID = int(DEFAULT_TARGET_CHAT_ID)
 except (ValueError, TypeError): pass
 
-# V8.8: Multi-Message Registry System
-QUEUE_REGISTRY = {}  # Format: { target_ts: [ (chat_id, text), (chat_id, text), ... ] }
+# Multi-Message Registry System
+QUEUE_REGISTRY = {}  
 MASTER_BATCH_TASKS = {}
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
@@ -565,22 +565,27 @@ async def schedule_master_batch(target_ts):
         target_dt_utc = datetime.fromtimestamp(target_ts, timezone.utc)
         target_dt_ist = target_dt_utc + IST_OFFSET
         
-        # Pull all payloads registered for this exact timestamp
         payloads = QUEUE_REGISTRY.get(target_ts, [])
-        if not payloads:
-            return
+        if not payloads: return
             
-        logger.info(f"💥 Master Batch Lock: {len(payloads)} Payloads Synchronized for {target_dt_ist.strftime('%H:%M:%S')} (IST)")
+        logger.info(f"💥 Master Batch Lock: {len(payloads)} Payloads Synced for {target_dt_ist.strftime('%H:%M:%S')} (IST)")
         
-        # Pre-resolve and build entities/requests array in advance
+        # V8.8.1: Safe Entity Resolution (Prevents full batch crash)
         compiled_requests = []
         for chat_id, text in payloads:
-            target_entity = await client.get_input_entity(chat_id)
-            raw_request = SendMessageRequest(
-                peer=target_entity, message=text,
-                random_id=random.randint(-9223372036854775808, 9223372036854775807), no_webpage=True
-            )
-            compiled_requests.append(raw_request)
+            try:
+                target_entity = await client.get_input_entity(chat_id)
+                raw_request = SendMessageRequest(
+                    peer=target_entity, message=text,
+                    random_id=random.randint(-9223372036854775808, 9223372036854775807), no_webpage=True
+                )
+                compiled_requests.append(raw_request)
+            except Exception as e:
+                logger.error(f"⚠️ Skipping Target '{chat_id}': Entity Not Cached! Error: {e}")
+        
+        if not compiled_requests:
+            logger.error("❌ Aborting Batch: No valid target entities could be resolved. Cache them first!")
+            return
 
         rtt_calculated = False
         dynamic_offset_seconds = 0.005  
@@ -598,19 +603,15 @@ async def schedule_master_batch(target_ts):
                 sys_load = os.getloadavg() if hasattr(os, 'getloadavg') else (1.0, 1.0, 1.0)
                 current_1m_load = sys_load[0]
                 
-                # Dynamic load stabilizer
                 os_choke_penalty = max(0.0, (current_1m_load - 3.5) * 1.5)
-                
-                # Check if target is a supergroup to fine-tune pre-fire padding
                 is_supergroup = any(str(cid).startswith('-100') for cid, _ in payloads)
                 padding = 1.0 if is_supergroup else 0.0
                 
                 dynamic_offset_seconds = (one_way_delay + os_choke_penalty + padding) / 1000.0 
                 
-                logger.info(f"📡 Batch Radar -> RTT: {avg_rtt:.2f}ms | Render Load: {current_1m_load:.2f} | Dynamic Offset: {dynamic_offset_seconds*1000.0:.2f}ms")
+                logger.info(f"📡 Batch Radar -> RTT: {avg_rtt:.2f}ms | Load: {current_1m_load:.2f} | Offset: {dynamic_offset_seconds*1000.0:.2f}ms")
                 rtt_calculated = True
 
-            # Dynamic Handbrake Release Check
             if time_left > (dynamic_offset_seconds + 0.002):
                 await asyncio.sleep(0.001)
                 continue
@@ -624,7 +625,6 @@ async def schedule_master_batch(target_ts):
             trigger_time = datetime.now(timezone.utc)
             t_dispatch_start = perf_counter()
             
-            # Fire all prepared packets concurrently into the low-level MTProto pipe
             fire_tasks = [client._sender.send(req) for req in compiled_requests]
             await asyncio.gather(*fire_tasks)
             
@@ -636,12 +636,12 @@ async def schedule_master_batch(target_ts):
             true_hit_time = ack_time - timedelta(milliseconds=(dispatch_to_ack_ms / 2.0))
             true_delta_ms = (true_hit_time.timestamp() - target_dt_utc.timestamp()) * 1000.0
             
-            logger.info(f"========== V8.8 BATCH EXECUTION REPORT ({len(compiled_requests)} Bursts) ==========")
+            logger.info(f"========== V8.8.1 BATCH EXECUTION REPORT ({len(compiled_requests)} Bursts) ==========")
             logger.info(f"[TIMING] Local Trigger:   {(trigger_time + IST_OFFSET).strftime('%H:%M:%S.%f')}")
             logger.info(f"[TIMING] TRUE TG HIT:     {(true_hit_time + IST_OFFSET).strftime('%H:%M:%S.%f')} 🎯")
             logger.info(f"[TIMING] True Delta:      {true_delta_ms:+.3f} ms")
             logger.info(f"[DIAG] Total Batch Dispatch Pipeline Execution: {dispatch_to_ack_ms:.1f}ms")
-            logger.info("======================================================================")
+            logger.info("========================================================================")
             break
 
     except asyncio.CancelledError:
@@ -651,7 +651,6 @@ async def schedule_master_batch(target_ts):
         gc.enable()
         logger.error(f"Gatling Engine Failure: {e}")
     finally:
-        # Clean up registry memory
         if target_ts in QUEUE_REGISTRY: del QUEUE_REGISTRY[target_ts]
         if target_ts in MASTER_BATCH_TASKS: del MASTER_BATCH_TASKS[target_ts]
 
@@ -661,7 +660,6 @@ async def message_handler(event):
     text = event.raw_text.strip().lower()
     
     if text == "cancel":
-        # Cancel all active future batch tasks instantly
         cancelled_count = 0
         for ts, task in list(MASTER_BATCH_TASKS.items()):
             if not task.done():
@@ -675,31 +673,26 @@ async def message_handler(event):
     msg_body, target_ts, target_chat = parse_payload(event.raw_text)
     if not target_ts or not msg_body: return
         
-    # Register the message inside the matrix for this specific timestamp
-    if target_ts not in QUEUE_REGISTRY:
-        QUEUE_REGISTRY[target_ts] = []
-        
+    if target_ts not in QUEUE_REGISTRY: QUEUE_REGISTRY[target_ts] = []
     QUEUE_REGISTRY[target_ts].append((target_chat, msg_body))
     current_count = len(QUEUE_REGISTRY[target_ts])
     
     target_dt_ist = datetime.fromtimestamp(target_ts, timezone.utc) + IST_OFFSET
     time_str = target_dt_ist.strftime('%I:%M:%S %p')
     
-    # If the master clock task is not yet scheduled for this timeslot, spin it up
     if target_ts not in MASTER_BATCH_TASKS or MASTER_BATCH_TASKS[target_ts].done():
         MASTER_BATCH_TASKS[target_ts] = loop.create_task(schedule_master_batch(target_ts))
     
     try:
         reply_msg = (
-            f"🚀 **Barrel #{current_count} Loaded into Gatling Engine!**\n\n"
-            f"🎯 **Target ID:** `{target_chat}`\n"
-            f"⏰ **Time Slot:** `{time_str}` (IST)\n"
-            f"📦 **Queue Stack:** `{current_count}` messages armed for this second."
+            f"🚀 **Barrel #{current_count} Loaded!**\n"
+            f"🎯 **Target:** `{target_chat}`\n"
+            f"⏰ **Slot:** `{time_str}` (IST)"
         )
         await event.reply(reply_msg)
     except Exception: pass
         
-async def dummy_web_handler(request): return web.Response(text="Cloud Precision V8.8 Gatling Engine Active.")
+async def dummy_web_handler(request): return web.Response(text="Cloud Precision V8.8.1 Gatling Active.")
 
 async def start_web_server():
     app = web.Application()
@@ -712,8 +705,26 @@ async def start_web_server():
 
 async def main():
     await client.start()
+    
+    # V8.8.1: Entity Cache Warmup Routine
+    logger.info("🔥 Warming up Entity Cache from Telegram...")
+    try:
+        await client.get_dialogs(limit=50)
+        logger.info("✅ Entity Cache Warmup Complete!")
+    except Exception as e:
+        logger.warning(f"Cache warmup failed, proceeding anyway: {e}")
+
+    global SOURCE_CHAT_ID_RESOLVED
+    try:
+        entity = await client.get_input_entity(SOURCE_CHAT_ID)
+        SOURCE_CHAT_ID_RESOLVED = utils.get_peer_id(entity)
+    except Exception:
+        SOURCE_CHAT_ID_RESOLVED = int(SOURCE_CHAT_ID) if isinstance(SOURCE_CHAT_ID, int) else SOURCE_CHAT_ID
+            
+    logger.info(f"Cloud Precision V8.8.1 Core Active on: {SOURCE_CHAT_ID_RESOLVED}")
     await start_web_server()
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
     loop.run_until_complete(main())
+
