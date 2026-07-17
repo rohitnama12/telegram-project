@@ -454,7 +454,6 @@
 
 
 
-
 import os
 import re
 import asyncio
@@ -473,9 +472,9 @@ from telethon.tl.functions import PingRequest
 # ================= CONFIGURATION =================
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - CloudPrecisionV9.1 - %(levelname)s - %(message)s'
+    format='%(asctime)s - CloudPrecisionV9.2 - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("CloudPrecisionV9.1_IST")
+logger = logging.getLogger("CloudPrecisionV9.2_IST")
 
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
@@ -586,7 +585,7 @@ async def measure_live_rtt():
         return sum(latencies) / len(latencies), min(latencies), max(latencies), max(latencies) - min(latencies)
     return 10.0, 10.0, 10.0, 0.0
 
-# ================= V9.1 SINGLE SHOT ENGINE =================
+# ================= V9.2 SINGLE SHOT ENGINE (UNTOUCHED) =================
 async def schedule_single_delivery(target_ts, chat_id, message_text):
     global CURRENT_SNIPER_TASK
     try:
@@ -610,7 +609,6 @@ async def schedule_single_delivery(target_ts, chat_id, message_text):
 
             if time_left <= 0: break
 
-            # V9.1 UPGRADE: Pre-Flight Socket Wakeup
             if time_left <= 15.0 and not pre_flight_done:
                 try:
                     await client._sender.send(PingRequest(ping_id=random.randint(1, 100000)))
@@ -641,7 +639,6 @@ async def schedule_single_delivery(target_ts, chat_id, message_text):
             
             gc.disable()
             
-            # V9.1 UPGRADE: Monotonic Hardware Spinlock
             trigger_target_ts = target_dt_utc.timestamp() - dynamic_offset_seconds
             current_ts = datetime.now(timezone.utc).timestamp()
             hardware_wait_time = trigger_target_ts - current_ts
@@ -660,7 +657,7 @@ async def schedule_single_delivery(target_ts, chat_id, message_text):
             true_hit_time = ack_time - timedelta(milliseconds=(dispatch_to_ack_ms / 2.0))
             true_delta_ms = (true_hit_time.timestamp() - target_dt_utc.timestamp()) * 1000.0
             
-            logger.info("========== V9.1 SINGLE-STAMP EXECUTION REPORT ==========")
+            logger.info("========== V9.2 SINGLE-STAMP EXECUTION REPORT ==========")
             logger.info(f"[TIMING] Hardware Trigger: {(trigger_time + IST_OFFSET).strftime('%H:%M:%S.%f')}")
             logger.info(f"[TIMING] TRUE TG HIT:      {(true_hit_time + IST_OFFSET).strftime('%H:%M:%S.%f')} 🎯")
             logger.info(f"[TIMING] True Delta:       {true_delta_ms:+.3f} ms")
@@ -678,7 +675,7 @@ async def schedule_single_delivery(target_ts, chat_id, message_text):
     finally:
         CURRENT_SNIPER_TASK = None
 
-# ================= V9.1 MULTIPLE GATLING ENGINE (GHOST PIPELINE) =================
+# ================= V9.2 MULTIPLE GATLING ENGINE (GHOST PIPELINE) =================
 async def schedule_master_batch(target_ts):
     global QUEUE_REGISTRY, MASTER_BATCH_TASKS, ACTIVE_PAYLOADS
     try:
@@ -700,7 +697,6 @@ async def schedule_master_batch(target_ts):
 
             if time_left <= 0: break
 
-            # V9.1 UPGRADE: Pre-Flight Socket Wakeup
             if time_left <= 15.0 and not pre_flight_done:
                 try:
                     await client._sender.send(PingRequest(ping_id=random.randint(1, 100000)))
@@ -730,7 +726,6 @@ async def schedule_master_batch(target_ts):
             
             gc.disable()
             
-            # V9.1 UPGRADE: Monotonic Hardware Spinlock
             trigger_target_ts = target_dt_utc.timestamp() - dynamic_offset_seconds
             current_ts = datetime.now(timezone.utc).timestamp()
             hardware_wait_time = trigger_target_ts - current_ts
@@ -744,12 +739,15 @@ async def schedule_master_batch(target_ts):
             
             final_payloads = QUEUE_REGISTRY.get(target_ts, [])
             
-            # Ghost Pipeline: Push packets directly to socket buffer bypassing ACK lag
+            # V9.2 GHOST FIX: Wrap Future in Coroutine to satisfy Python's Task Loop
+            async def ghost_fire(req):
+                try: await client._sender.send(req)
+                except Exception: pass
+
             for p in final_payloads:
-                loop.create_task(client._sender.send(p['req']))
+                loop.create_task(ghost_fire(p['req']))
             
-            # Force exact 1 cycle to write to OS Socket Buffer instantly
-            await asyncio.sleep(0)
+            await asyncio.sleep(0) # Force OS Socket Flush Instantly
             
             dispatch_to_flush_ms = (perf_counter() - t_dispatch_start) * 1000.0
             gc.enable()
@@ -757,7 +755,7 @@ async def schedule_master_batch(target_ts):
             true_hit_time = trigger_time + timedelta(milliseconds=avg_rtt / 2.0)
             true_delta_ms = (true_hit_time.timestamp() - target_dt_utc.timestamp()) * 1000.0
             
-            logger.info(f"========== V9.1 GHOST BATCH EXECUTION REPORT ({len(final_payloads)} Bursts) ==========")
+            logger.info(f"========== V9.2 GHOST BATCH EXECUTION REPORT ({len(final_payloads)} Bursts) ==========")
             logger.info(f"[TIMING] Hardware Trigger: {(trigger_time + IST_OFFSET).strftime('%H:%M:%S.%f')}")
             logger.info(f"[TIMING] Est. TG HIT:      {(true_hit_time + IST_OFFSET).strftime('%H:%M:%S.%f')} 🎯")
             logger.info(f"[TIMING] Est. Delta:       {true_delta_ms:+.3f} ms")
@@ -784,12 +782,12 @@ async def message_handler(event):
     
     if text == "single":
         reset_all_systems("single")
-        await event.reply("✅ **SINGLE SHOT MODE ACTIVATED**\n*V9.1 Monotonic Precision Engine is ready.*")
+        await event.reply("✅ **SINGLE SHOT MODE ACTIVATED**\n*V9.2 Monotonic Precision Engine is ready.*")
         return
         
     if text == "multiple":
         reset_all_systems("multiple")
-        await event.reply("✅ **MULTIPLE BATCH MODE ACTIVATED**\n*V9.1 Monotonic Ghost Pipeline is ready.*")
+        await event.reply("✅ **MULTIPLE BATCH MODE ACTIVATED**\n*V9.2 Monotonic Ghost Pipeline is ready.*")
         return
         
     if text == "cancel":
@@ -856,7 +854,7 @@ async def message_handler(event):
 
 # ================= WEB SERVER & MAIN =================
 async def dummy_web_handler(request): 
-    return web.Response(text="Cloud Precision V9.1 (Monotonic Engine) Active.")
+    return web.Response(text="Cloud Precision V9.2 (Dual Engine) Active.")
 
 async def start_web_server():
     app = web.Application()
@@ -884,7 +882,7 @@ async def main():
     except Exception:
         SOURCE_CHAT_ID_RESOLVED = int(SOURCE_CHAT_ID) if isinstance(SOURCE_CHAT_ID, int) else SOURCE_CHAT_ID
             
-    logger.info(f"Cloud Precision V9.1 Core Active on: {SOURCE_CHAT_ID_RESOLVED}")
+    logger.info(f"Cloud Precision V9.2 Core Active on: {SOURCE_CHAT_ID_RESOLVED}")
     logger.info("Waiting for Mode Selection ('single' or 'multiple')...")
     await start_web_server()
     await client.run_until_disconnected()
